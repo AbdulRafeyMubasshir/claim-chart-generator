@@ -273,7 +273,7 @@ export default function UploadPanel({ onResult, onStepChange }) {
       form.append("product_name", productName);
       form.append("claims_to_chart", claimsMode);
 
-      const res = await fetch(`${API_BASE}/generate`, { method: "POST", body: form });
+      const res = await fetch(`${API_BASE}generate`, { method: "POST", body: form });
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: "Unknown error" }));
