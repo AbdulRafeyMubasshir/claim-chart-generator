@@ -1,4 +1,5 @@
 import { useState, useRef } from "react";
+import { API_BASE } from "../api.js";
 
 const styles = `
   .upload-panel {
@@ -237,7 +238,9 @@ export default function UploadPanel({ onResult, onStepChange }) {
   const handleDrop = (setter) => (e) => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
-    if (file?.type === "application/pdf") setter(file);
+    if (file && file.type === "application/pdf") {
+      setter(file);
+    }
   };
 
   const canSubmit = patentFile && productFile && apiKey.trim().length > 10;
@@ -270,7 +273,7 @@ export default function UploadPanel({ onResult, onStepChange }) {
       form.append("product_name", productName);
       form.append("claims_to_chart", claimsMode);
 
-      const res = await fetch("/generate", { method: "POST", body: form });
+      const res = await fetch(`${API_BASE}/generate`, { method: "POST", body: form });
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: "Unknown error" }));
