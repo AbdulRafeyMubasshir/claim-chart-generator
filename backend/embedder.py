@@ -1,42 +1,26 @@
 """
-embedder.py
+embedder.py — lightweight version
 
-Embeds document chunks and performs semantic search
-to find chunks most relevant to each claim element.
-
-Uses sentence-transformers locally (free, no API cost).
-Model: all-MiniLM-L6-v2 — fast, good quality for technical text.
-
-No external vector DB needed — in-memory numpy cosine similarity
-is sufficient for demo scale (thousands of chunks).
+Replaces sentence-transformers (heavy, ~500MB RAM) with
+simple TF-IDF style keyword scoring for Railway's free tier.
+For production, swap back to sentence-transformers.
 """
 
+import re
+import math
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from chunker import Chunk
-
-
-# Load model once at module level (not per request)
-_model: SentenceTransformer | None = None
-
-
-def get_model() -> SentenceTransformer:
-    global _model
-    if _model is None:
-        print("Loading embedding model (first time only)...")
-        _model = SentenceTransformer("all-MiniLM-L6-v2")
-    return _model
 
 
 def embed_chunks(chunks: list[Chunk]) -> np.ndarray:
     """
-    Embed all document chunks.
-    Returns a 2D array of shape (n_chunks, embedding_dim).
+    Build a simple TF-IDF matrix instead of neural embeddings.
+    Returns a 2D array of shape (n_chunks, vocab_size).
     """
-    model = get_model()
-    texts = [chunk.text for chunk in chunks]
-    embeddings = model.encode(texts, show_progress_bar=False)
-    return embeddings
+    corpus = [chunk.text.lower() for chunk in chunks]
+    vocab = _build_vocab(corpus)
+    matrix = np.array([_tfidf_vector(doc, corpus, vocab) for doc in corpus])
+    return matrix
 
 
 def search(
@@ -46,49 +30,60 @@ def search(
     top_k: int = 3
 ) -> list[tuple[Chunk, float]]:
     """
-    Find the top_k most relevant chunks for a query string.
-
-    Args:
-        query: The claim element text to search for
-        chunks: List of document chunks
-        chunk_embeddings: Pre-computed embeddings for all chunks
-        top_k: Number of top results to return
-
-    Returns:
-        List of (chunk, similarity_score) tuples, sorted by relevance
+    Find top_k chunks most relevant to query using TF-IDF cosine similarity.
     """
-    model = get_model()
+    corpus = [chunk.text.lower() for chunk in chunks]
+    vocab = _build_vocab(corpus)
+    query_vec = _tfidf_vector(query.lower(), corpus, vocab)
 
-    # Embed the query
-    query_embedding = model.encode([query])[0]
-
-    # Compute cosine similarities
-    similarities = _cosine_similarity(query_embedding, chunk_embeddings)
-
-    # Get top_k indices
+    # Cosine similarity
+    similarities = _cosine_similarity(query_vec, chunk_embeddings)
     top_indices = np.argsort(similarities)[::-1][:top_k]
 
-    results = [
-        (chunks[i], float(similarities[i]))
-        for i in top_indices
-    ]
+    return [(chunks[i], float(similarities[i])) for i in top_indices]
 
-    return results
+
+def _build_vocab(corpus: list[str]) -> dict[str, int]:
+    vocab = {}
+    for doc in corpus:
+        for word in _tokenize(doc):
+            if word not in vocab:
+                vocab[word] = len(vocab)
+    return vocab
+
+
+def _tokenize(text: str) -> list[str]:
+    # Remove punctuation, split on whitespace, filter short words
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return [w for w in text.split() if len(w) > 2]
+
+
+def _tfidf_vector(doc: str, corpus: list[str], vocab: dict[str, int]) -> np.ndarray:
+    vec = np.zeros(len(vocab))
+    tokens = _tokenize(doc)
+    if not tokens:
+        return vec
+
+    # TF
+    tf = {}
+    for token in tokens:
+        tf[token] = tf.get(token, 0) + 1
+    for token, count in tf.items():
+        if token in vocab:
+            # IDF
+            doc_freq = sum(1 for d in corpus if token in d)
+            idf = math.log((len(corpus) + 1) / (doc_freq + 1)) + 1
+            vec[vocab[token]] = (count / len(tokens)) * idf
+
+    # Normalize
+    norm = np.linalg.norm(vec)
+    if norm > 0:
+        vec = vec / norm
+    return vec
 
 
 def _cosine_similarity(query_vec: np.ndarray, matrix: np.ndarray) -> np.ndarray:
-    """
-    Compute cosine similarity between a query vector
-    and a matrix of document vectors.
-    """
-    # Normalize query
     query_norm = query_vec / (np.linalg.norm(query_vec) + 1e-10)
-
-    # Normalize document vectors
     norms = np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-10
     matrix_norm = matrix / norms
-
-    # Dot product = cosine similarity (since both are normalized)
-    similarities = matrix_norm @ query_norm
-
-    return similarities
+    return matrix_norm @ query_norm
